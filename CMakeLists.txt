@@ -1,24 +1,25 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.16)
 project(Evosim LANGUAGES CXX)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-
-include(FetchContent)
-FetchContent_Declare(SFML
-    GIT_REPOSITORY https://github.com/SFML/SFML.git
-    GIT_TAG 3.0.1
-    GIT_SHALLOW ON
-    EXCLUDE_FROM_ALL
-    SYSTEM)
-FetchContent_MakeAvailable(SFML)
-
-add_executable(main
-    src/main.cpp
-    src/render.cpp
-    src/simulation.cpp
-    src/input.cpp
-    src/color_utils.cpp
-)
-target_compile_features(main PRIVATE cxx_std_17)
-target_link_libraries(main PRIVATE SFML::Graphics)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Find system SFML (installed via Homebrew)
+find_package(SFML 3 COMPONENTS Graphics REQUIRED)
+
+# Create executable with all source files
+add_executable(evosim
+    src/main.cpp
+    src/simulation.cpp
+    src/render.cpp
+    src/types.cpp
+)
+
+# Set C++17 standard
+target_compile_features(evosim PRIVATE cxx_std_17)
+
+# Link SFML
+target_link_libraries(evosim PRIVATE SFML::Graphics)
+
+# Copy assets to build directory
+file(COPY ${CMAKE_SOURCE_DIR}/src/assets DESTINATION ${CMAKE_BINARY_DIR}/bin)
