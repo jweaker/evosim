@@ -1,0 +1,140 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install SFML
+        run: |
+          curl -L -o sfml.zip https://www.sfml-dev.org/files/SFML-3.0.0-windows-vc17-64-bit.zip
+          7z x sfml.zip -osfml_extract
+          move sfml_extract\SFML-3.0.0 SFML
+
+      - name: Configure CMake
+        run: cmake -B build -DSFML_DIR=SFML/lib/cmake/SFML
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package
+        run: |
+          mkdir package
+          copy build\bin\Release\evosim.exe package\
+          copy SFML\bin\*.dll package\
+          xcopy build\bin\assets package\assets\ /E /I
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: evosim-windows
+          path: package/
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install SFML
+        run: brew install sfml
+
+      - name: Configure CMake
+        run: cmake -B build
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Package
+        run: |
+          mkdir -p package
+          cp build/bin/evosim package/
+          cp -r build/bin/assets package/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: evosim-macos
+          path: package/
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libudev-dev \
+            libfreetype-dev \
+            libflac-dev \
+            libvorbis-dev \
+            libgl1-mesa-dev \
+            libegl1-mesa-dev \
+            libxkbcommon-dev
+
+      - name: Install SFML 3
+        run: |
+          git clone --depth 1 --branch 3.0.0 https://github.com/SFML/SFML.git
+          cd SFML
+          cmake -B build -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON
+          cmake --build build
+          sudo cmake --install build
+
+      - name: Configure CMake
+        run: cmake -B build
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Package
+        run: |
+          mkdir -p package
+          cp build/bin/evosim package/
+          cp -r build/bin/assets package/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: evosim-linux
+          path: package/
+
+  release:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create archives
+        run: |
+          cd artifacts
+          zip -r ../evosim-windows.zip evosim-windows
+          tar -czvf ../evosim-macos.tar.gz evosim-macos
+          tar -czvf ../evosim-linux.tar.gz evosim-linux
+
+      - name: Upload release archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: evosim-all-platforms
+          path: |
+            evosim-windows.zip
+            evosim-macos.tar.gz
+            evosim-linux.tar.gz
