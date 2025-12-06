@@ -3,6 +3,8 @@ name: Build
 on:
   push:
     branches: [main, master]
+    tags:
+      - 'v*'
   pull_request:
     branches: [main, master]
   workflow_dispatch:
@@ -66,57 +68,12 @@ jobs:
           name: evosim-macos
           path: package/
 
-  build-linux:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libxrandr-dev \
-            libxcursor-dev \
-            libxi-dev \
-            libudev-dev \
-            libfreetype-dev \
-            libflac-dev \
-            libvorbis-dev \
-            libgl1-mesa-dev \
-            libegl1-mesa-dev \
-            libxkbcommon-dev
-
-      - name: Install SFML 3
-        run: |
-          git clone --depth 1 --branch 3.0.0 https://github.com/SFML/SFML.git
-          cd SFML
-          cmake -B build -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON
-          cmake --build build
-          sudo cmake --install build
-
-      - name: Configure CMake
-        run: cmake -B build
-
-      - name: Build
-        run: cmake --build build
-
-      - name: Package
-        run: |
-          mkdir -p package
-          cp build/bin/evosim package/
-          cp -r build/bin/assets package/
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: evosim-linux
-          path: package/
-
   release:
-    needs: [build-windows, build-macos, build-linux]
+    needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -128,13 +85,11 @@ jobs:
           cd artifacts
           zip -r ../evosim-windows.zip evosim-windows
           tar -czvf ../evosim-macos.tar.gz evosim-macos
-          tar -czvf ../evosim-linux.tar.gz evosim-linux
 
-      - name: Upload release archives
-        uses: actions/upload-artifact@v4
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
         with:
-          name: evosim-all-platforms
-          path: |
+          files: |
             evosim-windows.zip
             evosim-macos.tar.gz
-            evosim-linux.tar.gz
+          generate_release_notes: true
