@@ -35,6 +35,7 @@ void Renderer::handleEvent(const sf::Event& event, sf::RenderWindow& window, Sim
 }
 
 void Renderer::handleMouseClick(sf::Vector2f pos, sf::Mouse::Button btn, Simulation& sim) {
+    worldScale = worldDisplaySize / sim.config.worldSize;
     sf::FloatRect world(worldOffset, {worldDisplaySize, worldDisplaySize});
     
     auto handleEdit = [&](auto& items, bool& editing) {
@@ -112,6 +113,7 @@ void Renderer::handleMouseMove(sf::Vector2f pos, Simulation& sim) {
 }
 
 void Renderer::handleMouseRelease(sf::Vector2f pos, Simulation& sim) {
+    worldScale = worldDisplaySize / sim.config.worldSize;
     auto finishDraw = [&](auto& items) {
         sf::Vector2f we = (pos - worldOffset) / worldScale;
         float x = std::min(drawStart.x, we.x);
