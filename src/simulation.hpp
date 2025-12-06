@@ -1,135 +1,66 @@
-// simulation.hpp - Main simulation logic
-// Manages all peeps, food, obstacles, and the simulation loop
-
 #pragma once
-#include "types.hpp"
-#include "config.hpp"
+#include "core/config.hpp"
+#include "core/stats.hpp"
+#include "entities/peep.hpp"
+#include "entities/food.hpp"
+#include "entities/obstacle.hpp"
+#include "entities/survival_zone.hpp"
+#include "entities/spawn_zone.hpp"
 #include <vector>
 #include <random>
 
-// ============================================================================
-// SIMULATION CLASS
-// The heart of the evolution simulator
-// ============================================================================
-
 class Simulation {
 public:
-    // Configuration (can be modified through UI)
     SimConfig config;
+    Stats stats;
     
-    // Simulation state
     std::vector<Peep> peeps;
     std::vector<Food> foods;
     std::vector<Obstacle> obstacles;
     std::vector<SurvivalZone> survivalZones;
-    SimStats stats;
+    std::vector<SpawnZone> spawnZones;
     
-    // Time tracking
     float generationTimer;
     int currentGeneration;
     bool paused;
-    float speedMultiplier;  // Now float for proper slider binding
-    
-    // Selected peep for inspection (index or -1 if none)
+    float speedMultiplier;
     int selectedPeep;
-    
-    // Random number generator
-    std::mt19937 rng;
-    
-    // Constructor
+
     Simulation();
     
-    // ========================================================================
-    // INITIALIZATION
-    // ========================================================================
-    
-    // Set up a fresh simulation
     void initialize();
+    void update(float dt);
+    void reset();
+    void applyPreset(int index);
+
+private:
+    std::mt19937 rng;
+    std::uniform_real_distribution<float> randomDist;
     
-    // Create a single peep with random genome
     Peep createRandomPeep();
+    Peep createChild(const Peep& parent);
+    Peep createChild(const Peep& p1, const Peep& p2);
     
-    // Create a child peep from one or two parents
-    Peep createChild(const Peep& parent1);
-    Peep createChild(const Peep& parent1, const Peep& parent2);
-    
-    // Spawn food items
-    void spawnFood();
-    
-    // Create obstacles
-    void createObstacles();
-    
-    // ========================================================================
-    // SIMULATION UPDATE
-    // ========================================================================
-    
-    // Main update function - call once per frame
-    void update(float deltaTime);
-    
-    // Update a single peep's brain and movement
-    void updatePeep(Peep& peep, float dt);
-    
-    // Calculate neural network inputs for a peep
-    std::vector<float> calculateInputs(const Peep& peep);
-    
-    // Run the neural network and get outputs
-    std::vector<float> runBrain(Peep& peep, const std::vector<float>& inputs);
-    
-    // Handle peep movement and collisions
-    void movePeep(Peep& peep, float moveX, float moveY, float dt);
-    
-    // Check if peep can eat nearby food
-    void checkFoodCollision(Peep& peep);
-    
-    // Update food respawning
+    void updatePeep(Peep& p, float dt);
+    void calculateInputs(const Peep& p, float* inputs);
+    void movePeep(Peep& p, float mx, float my, float dt);
+    void resolveCollisions();
+    void checkFood(Peep& p);
     void updateFood(float dt);
     
-    // ========================================================================
-    // REPRODUCTION AND EVOLUTION
-    // ========================================================================
-    
-    // End of generation - select survivors and create next generation
     void endGeneration();
-    
-    // Get list of peeps that will reproduce
     std::vector<Peep*> getSurvivors();
     
-    // Mutate a genome, returns bitmask of which bits were flipped per gene
-    std::vector<uint32_t> mutateGenome(std::vector<uint32_t>& genome);
-    
-    // Crossover two genomes
-    std::vector<uint32_t> crossoverGenomes(const std::vector<uint32_t>& g1, 
-                                            const std::vector<uint32_t>& g2);
-    
-    // Calculate color from genome
-    void updatePeepColor(Peep& peep);
-    
-    // ========================================================================
-    // UTILITIES
-    // ========================================================================
-    
-    // Find nearest food to a position
     Food* findNearestFood(sf::Vector2f pos);
+    float distanceToWall(sf::Vector2f pos);
+    bool insideObstacle(sf::Vector2f pos);
+    bool inSurvivalZone(sf::Vector2f pos);
+    void findNearestZone(sf::Vector2f pos, float& dx, float& dy, float& dist, bool& inside);
+    sf::Vector2f randomValidPosition();
     
-    // Get distance to nearest wall
-    float distanceToNearestWall(sf::Vector2f pos);
-    
-    // Check if position is inside any obstacle
-    bool isInsideObstacle(sf::Vector2f pos);
-    
-    // Check if position is inside any survival zone
-    bool isInSurvivalZone(sf::Vector2f pos);
-    
-    // Find nearest survival zone and return direction/distance
-    // Returns: {dirX, dirY, distance, isInside}
-    void findNearestSurvivalZone(sf::Vector2f pos, float& dirX, float& dirY, float& dist, bool& inside);
-    
-    // Get a random position not inside an obstacle
-    sf::Vector2f getRandomValidPosition();
-    
-    // Update statistics
+    void spawnFood();
+    void generateMazeObstacles();
+    void generatePresetZone();
+    void generatePresetSpawnZone();
     void updateStats();
-    
-    // Reset the simulation
-    void reset();
 };

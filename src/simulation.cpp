@@ -1,965 +1,723 @@
-// simulation.cpp - Implementation of the evolution simulation
-
 #include "simulation.hpp"
-#include <cmath>
+#include "core/constants.hpp"
+#include "neural/brain.hpp"
 #include <algorithm>
-#include <limits>
+#include <cmath>
 
-// ============================================================================
-// CONSTRUCTOR
-// ============================================================================
-
-Simulation::Simulation() 
-    : generationTimer(0.0f)
-    , currentGeneration(0)
-    , paused(false)
-    , speedMultiplier(1.0f)
-    , selectedPeep(-1)
-    , rng(std::random_device{}()) {
+Simulation::Simulation()
+    : generationTimer(0.0f), currentGeneration(0), paused(false),
+      speedMultiplier(1.0f), selectedPeep(-1), randomDist(-1.0f, 1.0f) {
+  std::random_device rd;
+  rng = std::mt19937(rd());
 }
 
-// ============================================================================
-// INITIALIZATION
-// ============================================================================
-
 void Simulation::initialize() {
-    peeps.clear();
-    foods.clear();
-    // Note: Don't clear obstacles - user drew them
-    // Note: Don't clear survivalZones - user drew them
-    
-    currentGeneration = 0;
-    generationTimer = 0.0f;
-    selectedPeep = -1;
-    
-    // Clear history
-    stats = SimStats();
-    
-    // Don't auto-generate obstacles - only use user-drawn ones
-    
-    // Create initial population
-    int maxPop = static_cast<int>(config.maxPopulation);
-    int initPop = static_cast<int>(config.initialPopulation);
-    peeps.reserve(static_cast<size_t>(maxPop));
-    for (int i = 0; i < initPop; i++) {
-        peeps.push_back(createRandomPeep());
-    }
-    
-    // Spawn food
-    if (config.hungerEnabled) {
-        spawnFood();
-    }
-    
-    updateStats();
+  peeps.clear();
+  foods.clear();
+
+  currentGeneration = 0;
+  generationTimer = 0.0f;
+  selectedPeep = -1;
+  stats.reset();
+
+  int pop = config.getInitialPopulation();
+  peeps.reserve(pop);
+  for (int i = 0; i < pop; i++) {
+    peeps.push_back(createRandomPeep());
+  }
+
+  if (config.hungerEnabled) {
+    spawnFood();
+  }
+
+  updateStats();
 }
 
 Peep Simulation::createRandomPeep() {
-    Peep peep;
-    
-    // Random position (not inside obstacles)
-    peep.position = getRandomValidPosition();
-    peep.velocity = sf::Vector2f(0.0f, 0.0f);
-    
-    // Initialize hunger (100 = full, 0 = starving)
-    peep.hunger = config.startingHunger;
-    peep.age = 0.0f;
-    peep.alive = true;
-    peep.generation = currentGeneration;
-    
-    // Create random genome using the new bit layout
-    int geneCount = static_cast<int>(config.genesPerPeep);
-    int hiddenCount = static_cast<int>(config.hiddenNeurons);
-    
-    std::uniform_int_distribution<uint32_t> fullGeneDist(0, 0xFFFFFFFF);
-    
-    peep.genome.resize(static_cast<size_t>(geneCount));
-    for (int i = 0; i < geneCount; i++) {
-        // Generate completely random 32-bit gene
-        peep.genome[i] = fullGeneDist(rng);
-    }
-    
-    // Initialize neuron arrays
-    peep.hiddenNeurons.resize(static_cast<size_t>(hiddenCount), 0.0f);
-    peep.outputNeurons.resize(OUTPUT_NEURON_COUNT, 0.0f);
-    
-    // Set color based on genome
-    updatePeepColor(peep);
-    
-    return peep;
+  Peep p;
+  p.position = randomValidPosition();
+  p.hunger = config.startingHunger;
+  p.generation = currentGeneration;
+
+  int genes = config.getGenesPerPeep();
+  int hidden = config.getHiddenNeurons();
+
+  p.genome = Brain::randomGenome(genes, rng);
+  p.init(hidden, genes);
+  p.updateColor();
+
+  return p;
 }
 
-Peep Simulation::createChild(const Peep& parent1) {
-    Peep child;
-    
-    // Random position
-    child.position = getRandomValidPosition();
-    child.velocity = sf::Vector2f(0.0f, 0.0f);
-    
-    // Copy parent's genome
-    child.genome = parent1.genome;
-    
-    // Apply bit-flip mutations and track which bits were flipped
-    child.mutatedBits = mutateGenome(child.genome);
-    
-    // Initialize neurons
-    int hiddenCount = static_cast<int>(config.hiddenNeurons);
-    child.hiddenNeurons.resize(static_cast<size_t>(hiddenCount), 0.0f);
-    child.outputNeurons.resize(OUTPUT_NEURON_COUNT, 0.0f);
-    
-    // Update color
-    updatePeepColor(child);
-    
-    // Reset stats
-    child.hunger = config.startingHunger;
-    child.age = 0.0f;
-    child.alive = true;
-    child.generation = currentGeneration;
-    
-    return child;
+Peep Simulation::createChild(const Peep &parent) {
+  Peep child;
+  child.position = randomValidPosition();
+  child.hunger = config.startingHunger;
+  child.generation = currentGeneration;
+
+  child.genome =
+      Brain::mutate(parent.genome, config.mutationRate, config.mutationStrength,
+                    rng, &child.mutatedBits);
+  child.init(config.getHiddenNeurons(), config.getGenesPerPeep());
+  child.updateColor();
+
+  return child;
 }
 
-Peep Simulation::createChild(const Peep& parent1, const Peep& parent2) {
-    Peep child;
-    
-    // Random position
-    child.position = getRandomValidPosition();
-    child.velocity = sf::Vector2f(0.0f, 0.0f);
-    
-    // Crossover genomes
-    child.genome = crossoverGenomes(parent1.genome, parent2.genome);
-    
-    // Apply bit-flip mutations and track which bits were flipped
-    child.mutatedBits = mutateGenome(child.genome);
-    
-    // Initialize neurons
-    int hiddenCount = static_cast<int>(config.hiddenNeurons);
-    child.hiddenNeurons.resize(static_cast<size_t>(hiddenCount), 0.0f);
-    child.outputNeurons.resize(OUTPUT_NEURON_COUNT, 0.0f);
-    
-    // Update color
-    updatePeepColor(child);
-    
-    // Reset stats
-    child.hunger = config.startingHunger;
-    child.age = 0.0f;
-    child.alive = true;
-    child.generation = currentGeneration;
-    
-    return child;
-}
+Peep Simulation::createChild(const Peep &p1, const Peep &p2) {
+  Peep child;
+  child.position = randomValidPosition();
+  child.hunger = config.startingHunger;
+  child.generation = currentGeneration;
 
-void Simulation::spawnFood() {
-    foods.clear();
-    int foodCnt = static_cast<int>(config.foodCount);
-    foods.reserve(static_cast<size_t>(foodCnt));
-    
-    for (int i = 0; i < foodCnt; i++) {
-        sf::Vector2f pos = getRandomValidPosition();
-        foods.push_back(Food(pos.x, pos.y));
-    }
-}
+  auto mixed = Brain::crossover(p1.genome, p2.genome, rng);
+  child.genome =
+      Brain::mutate(mixed, config.mutationRate, config.mutationStrength, rng,
+                    &child.mutatedBits);
+  child.init(config.getHiddenNeurons(), config.getGenesPerPeep());
+  child.updateColor();
 
-void Simulation::createObstacles() {
-    obstacles.clear();
-    int obsCnt = static_cast<int>(config.obstacleCount);
-    obstacles.reserve(static_cast<size_t>(obsCnt));
-    
-    std::uniform_real_distribution<float> sizeDist(config.minObstacleSize, config.maxObstacleSize);
-    
-    for (int i = 0; i < obsCnt; i++) {
-        float w = sizeDist(rng);
-        float h = sizeDist(rng);
-        
-        float margin = 50.0f;
-        std::uniform_real_distribution<float> xDist(margin, config.worldSize - w - margin);
-        std::uniform_real_distribution<float> yDist(margin, config.worldSize - h - margin);
-        
-        obstacles.push_back(Obstacle(xDist(rng), yDist(rng), w, h));
-    }
+  return child;
 }
-
-// ============================================================================
-// SIMULATION UPDATE
-// ============================================================================
 
 void Simulation::update(float deltaTime) {
-    if (paused) return;
-    
-    // Total simulated time this frame
-    float totalSimTime = deltaTime * speedMultiplier;
-    
-    // Maximum time step for stable physics (larger = faster but less accurate)
-    const float maxStepDt = 0.1f;
-    
-    // Run multiple simulation steps if needed for high speeds
-    while (totalSimTime > 0.0f) {
-        float stepDt = std::min(totalSimTime, maxStepDt);
-        totalSimTime -= stepDt;
-        
-        // Update generation timer
-        generationTimer += stepDt;
-        
-        // Update food respawning
-        if (config.hungerEnabled) {
-            updateFood(stepDt);
-        }
-        
-        // Update each peep
-        int aliveCount = 0;
-        for (Peep& peep : peeps) {
-            if (!peep.alive) continue;
-            
-            updatePeep(peep, stepDt);
-            
-            if (peep.alive) {
-                aliveCount++;
-            }
-        }
-        
-        // Check for generation end
-        bool shouldEndGeneration = false;
-        
-        // Timer always ends the generation when time runs out
-        if (generationTimer >= config.generationTime) {
-            shouldEndGeneration = true;
-        }
-        
-        // Hunger mode: also end when population drops too low
-        if (config.hungerEnabled) {
-            int minPop = static_cast<int>(config.minPopulation);
-            if (aliveCount <= minPop && aliveCount > 0) {
-                shouldEndGeneration = true;
-            } else if (aliveCount == 0) {
-                // Everyone died - restart
-                initialize();
-                return;
-            }
-        }
-        
-        if (shouldEndGeneration) {
-            endGeneration();
-            // Don't continue simulating old generation's remaining time
-            break;
-        }
-    }
-    
-    updateStats();
-}
+  if (paused)
+    return;
 
-void Simulation::updatePeep(Peep& peep, float dt) {
-    // Update age
-    peep.age += dt;
-    
-    // Hunger decay (hunger decreases over time, peep dies when it hits 0)
+  float simTime = deltaTime * speedMultiplier;
+
+  while (simTime > 0.0f) {
+    float step = std::min(simTime, Constants::MAX_PHYSICS_STEP);
+    simTime -= step;
+
+    generationTimer += step;
+
     if (config.hungerEnabled) {
-        peep.hunger -= config.hungerDecayRate * dt;
-        
-        if (peep.hunger <= 0) {
-            peep.alive = false;
-            return;
-        }
+      updateFood(step);
     }
-    
-    // Calculate inputs
-    std::vector<float> inputs = calculateInputs(peep);
-    
-    // Run brain
-    std::vector<float> outputs = runBrain(peep, inputs);
-    
-    // Apply movement
-    float moveX = outputs[OutputNeuron::MoveX];
-    float moveY = outputs[OutputNeuron::MoveY];
-    movePeep(peep, moveX, moveY, dt);
-    
-    // Check for food
+
+    int alive = 0;
+    for (auto &p : peeps) {
+      if (!p.alive)
+        continue;
+      updatePeep(p, step);
+      if (p.alive)
+        alive++;
+    }
+
+    resolveCollisions();
+
+    bool shouldEnd = (generationTimer >= config.generationTime);
+
     if (config.hungerEnabled) {
-        checkFoodCollision(peep);
+      int minPop = config.getMinPopulation();
+      if (alive <= minPop && alive > 0) {
+        shouldEnd = true;
+      } else if (alive == 0) {
+        initialize();
+        return;
+      }
     }
+
+    if (shouldEnd) {
+      endGeneration();
+      break;
+    }
+  }
+
+  updateStats();
 }
 
-std::vector<float> Simulation::calculateInputs(const Peep& peep) {
-    std::vector<float> inputs(INPUT_NEURON_COUNT, 0.0f);
-    
-    // Position (normalized 0-1)
-    inputs[InputNeuron::PosX] = peep.position.x / config.worldSize;
-    inputs[InputNeuron::PosY] = peep.position.y / config.worldSize;
-    
-    // Nearest food
-    Food* nearestFood = findNearestFood(peep.position);
-    if (nearestFood && !nearestFood->eaten) {
-        sf::Vector2f toFood = nearestFood->position - peep.position;
-        float dist = std::sqrt(toFood.x * toFood.x + toFood.y * toFood.y);
-        
-        if (dist > 0.001f) {
-            inputs[InputNeuron::NearestFoodDX] = toFood.x / dist;
-            inputs[InputNeuron::NearestFoodDY] = toFood.y / dist;
-        }
-        
-        inputs[InputNeuron::NearestFoodDist] = std::min(1.0f, dist / config.peepSenseRange);
-    } else {
-        inputs[InputNeuron::NearestFoodDist] = 1.0f;
+void Simulation::updatePeep(Peep &p, float dt) {
+  p.age += dt;
+
+  if (config.hungerEnabled) {
+    p.hunger -= config.hungerDecayRate * dt;
+    if (p.hunger <= 0) {
+      p.alive = false;
+      return;
     }
-    
-    // Distance to nearest wall
-    inputs[InputNeuron::NearestWallDist] = distanceToNearestWall(peep.position) / config.peepSenseRange;
-    
-    // Hunger (normalized 0-1, 1 = full, 0 = starving)
-    if (config.hungerEnabled) {
-        inputs[InputNeuron::Hunger] = peep.hunger / config.maxHunger;
-    } else {
-        inputs[InputNeuron::Hunger] = 1.0f;
-    }
-    
-    // Age (normalized)
-    inputs[InputNeuron::Age] = std::min(1.0f, peep.age / config.generationTime);
-    
-    // Time remaining in generation (1.0 = just started, 0.0 = about to end)
-    float timeRemaining = 1.0f - (generationTimer / config.generationTime);
-    inputs[InputNeuron::TimeRemaining] = std::max(0.0f, std::min(1.0f, timeRemaining));
-    
-    // Survival zone inputs
-    float zoneDirX, zoneDirY, zoneDist;
-    bool inZone;
-    findNearestSurvivalZone(peep.position, zoneDirX, zoneDirY, zoneDist, inZone);
-    inputs[InputNeuron::ZoneDX] = zoneDirX;
-    inputs[InputNeuron::ZoneDY] = zoneDirY;
-    inputs[InputNeuron::ZoneDist] = zoneDist;
-    inputs[InputNeuron::InZone] = inZone ? 1.0f : 0.0f;
-    
-    // Random input
-    std::uniform_real_distribution<float> randDist(-1.0f, 1.0f);
-    inputs[InputNeuron::Random] = randDist(rng);
-    
-    // Bias
-    inputs[InputNeuron::Bias] = 1.0f;
-    
-    return inputs;
+  }
+
+  float inputs[NeuralConfig::INPUT_COUNT];
+  calculateInputs(p, inputs);
+
+  p.brain.process(inputs, NeuralConfig::INPUT_COUNT);
+
+  float mx = p.brain.getOutput(NeuralConfig::OUT_MOVE_X);
+  float my = p.brain.getOutput(NeuralConfig::OUT_MOVE_Y);
+  movePeep(p, mx, my, dt);
+
+  if (config.hungerEnabled) {
+    checkFood(p);
+  }
 }
 
-std::vector<float> Simulation::runBrain(Peep& peep, const std::vector<float>& inputs) {
-    // Reset neurons
-    std::fill(peep.hiddenNeurons.begin(), peep.hiddenNeurons.end(), 0.0f);
-    std::fill(peep.outputNeurons.begin(), peep.outputNeurons.end(), 0.0f);
-    
-    // Temporary accumulators for the next layer
-    std::vector<float> hiddenAccum(peep.hiddenNeurons.size(), 0.0f);
-    std::vector<float> outputAccum(OUTPUT_NEURON_COUNT, 0.0f);
-    
-    // PASS 1: Process all input->hidden and input->output connections
-    for (uint32_t encoded : peep.genome) {
-        Gene gene = Gene::decode(encoded);
-        
-        // Only process connections FROM input neurons in this pass
-        if (gene.sourceType != 0) continue;
-        
-        // Get input value
-        float sourceValue = 0.0f;
-        if (gene.sourceIndex < INPUT_NEURON_COUNT) {
-            sourceValue = inputs[gene.sourceIndex];
-        }
-        
-        // Apply weight and add to destination accumulator
-        float contribution = sourceValue * gene.weight;
-        
-        if (gene.destType == 0) {
-            // To hidden neuron
-            if (gene.destIndex < static_cast<int>(hiddenAccum.size())) {
-                hiddenAccum[gene.destIndex] += contribution;
-            }
-        } else {
-            // To output neuron
-            if (gene.destIndex < OUTPUT_NEURON_COUNT) {
-                outputAccum[gene.destIndex] += contribution;
-            }
-        }
+void Simulation::calculateInputs(const Peep &p, float *inputs) {
+  for (int i = 0; i < NeuralConfig::INPUT_COUNT; i++) {
+    inputs[i] = 0.0f;
+  }
+
+  inputs[NeuralConfig::IN_POS_X] = p.position.x / config.worldSize;
+  inputs[NeuralConfig::IN_POS_Y] = p.position.y / config.worldSize;
+
+  Food *food = findNearestFood(p.position);
+  if (food && !food->eaten()) {
+    sf::Vector2f fpos = food->position();
+    float dx = fpos.x - p.position.x;
+    float dy = fpos.y - p.position.y;
+    float dist = std::sqrt(dx * dx + dy * dy);
+
+    if (dist > Constants::EPSILON) {
+      inputs[NeuralConfig::IN_FOOD_DX] = dx / dist;
+      inputs[NeuralConfig::IN_FOOD_DY] = dy / dist;
     }
-    
-    // Apply activation to hidden neurons
-    for (size_t i = 0; i < peep.hiddenNeurons.size(); i++) {
-        peep.hiddenNeurons[i] = std::tanh(hiddenAccum[i]);
-    }
-    
-    // PASS 2: Process all hidden->hidden and hidden->output connections
-    for (uint32_t encoded : peep.genome) {
-        Gene gene = Gene::decode(encoded);
-        
-        // Only process connections FROM hidden neurons in this pass
-        if (gene.sourceType != 1) continue;
-        
-        // Get hidden neuron value (already activated)
-        float sourceValue = 0.0f;
-        if (gene.sourceIndex < static_cast<int>(peep.hiddenNeurons.size())) {
-            sourceValue = peep.hiddenNeurons[gene.sourceIndex];
-        }
-        
-        // Apply weight and add to destination
-        float contribution = sourceValue * gene.weight;
-        
-        if (gene.destType == 0) {
-            // Hidden to hidden - add to hidden neuron directly (will be re-processed)
-            // This creates recurrent connections within the hidden layer
-            if (gene.destIndex < static_cast<int>(peep.hiddenNeurons.size())) {
-                peep.hiddenNeurons[gene.destIndex] = std::tanh(peep.hiddenNeurons[gene.destIndex] + contribution);
-            }
-        } else {
-            // To output neuron
-            if (gene.destIndex < OUTPUT_NEURON_COUNT) {
-                outputAccum[gene.destIndex] += contribution;
-            }
-        }
-    }
-    
-    // Apply activation to output neurons
-    for (int i = 0; i < OUTPUT_NEURON_COUNT; i++) {
-        peep.outputNeurons[i] = std::tanh(outputAccum[i]);
-    }
-    
-    return peep.outputNeurons;
+    inputs[NeuralConfig::IN_FOOD_DIST] =
+        std::min(1.0f, dist / config.peepSenseRange);
+  } else {
+    inputs[NeuralConfig::IN_FOOD_DIST] = 1.0f;
+  }
+
+  inputs[NeuralConfig::IN_WALL_DIST] =
+      std::min(1.0f, distanceToWall(p.position) / config.peepSenseRange);
+
+  inputs[NeuralConfig::IN_HUNGER] =
+      config.hungerEnabled ? (p.hunger / config.maxHunger) : 1.0f;
+  inputs[NeuralConfig::IN_AGE] = std::min(1.0f, p.age / config.generationTime);
+
+  float timeLeft = 1.0f - (generationTimer / config.generationTime);
+  inputs[NeuralConfig::IN_TIME_LEFT] = std::max(0.0f, std::min(1.0f, timeLeft));
+
+  float zDx, zDy, zDist;
+  bool inZone;
+  findNearestZone(p.position, zDx, zDy, zDist, inZone);
+  inputs[NeuralConfig::IN_ZONE_DX] = zDx;
+  inputs[NeuralConfig::IN_ZONE_DY] = zDy;
+  inputs[NeuralConfig::IN_ZONE_DIST] = zDist;
+  inputs[NeuralConfig::IN_ZONE] = inZone ? 1.0f : 0.0f;
+
+  inputs[NeuralConfig::IN_RANDOM] = randomDist(rng);
+  inputs[NeuralConfig::IN_BIAS] = 1.0f;
 }
 
-void Simulation::movePeep(Peep& peep, float moveX, float moveY, float dt) {
-    float speed = config.peepSpeed * dt;
-    sf::Vector2f newPos = peep.position;
-    newPos.x += moveX * speed;
-    newPos.y += moveY * speed;
-    
-    // Clamp to world bounds
-    newPos.x = std::max(0.0f, std::min(newPos.x, config.worldSize));
-    newPos.y = std::max(0.0f, std::min(newPos.y, config.worldSize));
-    
-    // Check obstacle collision
-    if (config.obstaclesEnabled && isInsideObstacle(newPos)) {
-        sf::Vector2f tryX = sf::Vector2f(newPos.x, peep.position.y);
-        sf::Vector2f tryY = sf::Vector2f(peep.position.x, newPos.y);
-        
-        if (!isInsideObstacle(tryX)) {
-            newPos = tryX;
-        } else if (!isInsideObstacle(tryY)) {
-            newPos = tryY;
-        } else {
-            newPos = peep.position;
-        }
-    }
-    
-    // Hunger cost for movement (moving uses more energy, decreases hunger faster)
-    sf::Vector2f movement = newPos - peep.position;
-    float moveDist = std::sqrt(movement.x * movement.x + movement.y * movement.y);
-    
-    if (config.hungerEnabled && moveDist > 0.01f && speed > 0.0001f) {
-        peep.hunger -= config.movementHungerCost * moveDist / speed * dt;
-    }
-    
-    peep.position = newPos;
-    if (dt > 0.0001f) {
-        peep.velocity = movement / dt;
-    }
+void Simulation::movePeep(Peep &p, float mx, float my, float dt) {
+  float speed = config.peepSpeed * dt;
+  sf::Vector2f newPos = p.position;
+  newPos.x += mx * speed;
+  newPos.y += my * speed;
+
+  float maxP = config.worldSize - Constants::WORLD_MARGIN;
+  newPos.x = std::max(Constants::WORLD_MARGIN, std::min(maxP, newPos.x));
+  newPos.y = std::max(Constants::WORLD_MARGIN, std::min(maxP, newPos.y));
+
+  if (config.obstaclesEnabled && insideObstacle(newPos)) {
+    sf::Vector2f tryX(newPos.x, p.position.y);
+    sf::Vector2f tryY(p.position.x, newPos.y);
+
+    if (!insideObstacle(tryX))
+      newPos = tryX;
+    else if (!insideObstacle(tryY))
+      newPos = tryY;
+    else
+      newPos = p.position;
+  }
+
+  float dx = newPos.x - p.position.x;
+  float dy = newPos.y - p.position.y;
+  float moved = std::sqrt(dx * dx + dy * dy);
+
+  if (config.hungerEnabled && moved > Constants::EPSILON) {
+    p.hunger -= config.movementHungerCost * moved;
+  }
+
+  p.position = newPos;
+  if (dt > Constants::EPSILON) {
+    p.velocity = {dx / dt, dy / dt};
+  }
 }
 
-void Simulation::checkFoodCollision(Peep& peep) {
-    float eatRadius = config.peepSize + config.foodSize;
-    
-    for (Food& food : foods) {
-        if (food.eaten) continue;
-        
-        sf::Vector2f toFood = food.position - peep.position;
-        float dist = std::sqrt(toFood.x * toFood.x + toFood.y * toFood.y);
-        
-        if (dist < eatRadius) {
-            food.eaten = true;
-            food.respawnTimer = config.foodRespawnTime;
-            peep.hunger = std::min(peep.hunger + config.foodHunger, config.maxHunger);
+void Simulation::resolveCollisions() {
+  float radius = config.peepSize * 2.0f;
+  float radiusSq = radius * radius;
+  float maxP = config.worldSize - Constants::WORLD_MARGIN;
+
+  int n = (int)peeps.size();
+  for (int i = 0; i < n; i++) {
+    if (!peeps[i].alive)
+      continue;
+
+    for (int j = i + 1; j < n; j++) {
+      if (!peeps[j].alive)
+        continue;
+
+      float dx = peeps[j].position.x - peeps[i].position.x;
+      float dy = peeps[j].position.y - peeps[i].position.y;
+      float distSq = dx * dx + dy * dy;
+
+      if (distSq < radiusSq && distSq > Constants::EPSILON) {
+        float dist = std::sqrt(distSq);
+        float overlap = radius - dist;
+        float nx = dx / dist;
+        float ny = dy / dist;
+        float push = overlap * 0.5f;
+
+        sf::Vector2f newI = peeps[i].position;
+        newI.x -= nx * push;
+        newI.y -= ny * push;
+        newI.x = std::max(Constants::WORLD_MARGIN, std::min(maxP, newI.x));
+        newI.y = std::max(Constants::WORLD_MARGIN, std::min(maxP, newI.y));
+
+        sf::Vector2f newJ = peeps[j].position;
+        newJ.x += nx * push;
+        newJ.y += ny * push;
+        newJ.x = std::max(Constants::WORLD_MARGIN, std::min(maxP, newJ.x));
+        newJ.y = std::max(Constants::WORLD_MARGIN, std::min(maxP, newJ.y));
+
+        bool iBlocked = config.obstaclesEnabled && insideObstacle(newI);
+        bool jBlocked = config.obstaclesEnabled && insideObstacle(newJ);
+
+        if (!iBlocked && !jBlocked) {
+          peeps[i].position = newI;
+          peeps[j].position = newJ;
+        } else if (!iBlocked) {
+          peeps[i].position.x -= nx * overlap;
+          peeps[i].position.y -= ny * overlap;
+        } else if (!jBlocked) {
+          peeps[j].position.x += nx * overlap;
+          peeps[j].position.y += ny * overlap;
         }
+      }
     }
+  }
+}
+
+void Simulation::checkFood(Peep &p) {
+  float eatDist = config.peepSize + config.foodSize;
+
+  for (auto &f : foods) {
+    if (f.eaten())
+      continue;
+
+    sf::Vector2f fpos = f.position();
+    float dx = fpos.x - p.position.x;
+    float dy = fpos.y - p.position.y;
+    float dist = std::sqrt(dx * dx + dy * dy);
+
+    if (dist < eatDist) {
+      f.eat(config.foodRespawnTime);
+      p.hunger = std::min(config.maxHunger, p.hunger + config.foodHunger);
+    }
+  }
 }
 
 void Simulation::updateFood(float dt) {
-    for (Food& food : foods) {
-        if (!food.eaten) continue;
-        
-        food.respawnTimer -= dt;
-        if (food.respawnTimer <= 0) {
-            sf::Vector2f newPos = getRandomValidPosition();
-            food.position = newPos;
-            food.eaten = false;
-        }
+  for (auto &f : foods) {
+    if (!f.eaten())
+      continue;
+    f.update(dt);
+    if (f.respawnTimer() <= 0) {
+      f.respawn(randomValidPosition());
     }
+  }
 }
-
-// ============================================================================
-// REPRODUCTION AND EVOLUTION
-// ============================================================================
 
 void Simulation::endGeneration() {
-    // Get survivors
-    std::vector<Peep*> survivors = getSurvivors();
-    
-    // Calculate survival rate
-    float survivalRate = 0.0f;
-    if (!peeps.empty()) {
-        if (config.hungerEnabled) {
-            int aliveCount = 0;
-            for (const Peep& p : peeps) {
-                if (p.alive) aliveCount++;
-            }
-            survivalRate = static_cast<float>(aliveCount) / static_cast<float>(peeps.size());
-        } else {
-            survivalRate = static_cast<float>(survivors.size()) / static_cast<float>(peeps.size());
-        }
-    }
-    
-    // Record stats
-    float avgHunger = 0.0f;
-    for (const Peep* s : survivors) {
-        avgHunger += s->hunger;
-    }
-    if (!survivors.empty()) {
-        avgHunger /= static_cast<float>(survivors.size());
-    }
-    stats.recordGeneration(survivalRate, static_cast<int>(survivors.size()), avgHunger);
-    
-    // If no survivors, restart
-    if (survivors.empty()) {
-        initialize();
-        return;
-    }
-    
-    // Create next generation
-    std::vector<Peep> nextGen;
-    int initPop = static_cast<int>(config.initialPopulation);
-    nextGen.reserve(static_cast<size_t>(initPop));
-    
-    std::uniform_int_distribution<size_t> parentDist(0, survivors.size() - 1);
-    std::bernoulli_distribution crossoverDist(config.crossoverRate);
-    
-    for (int i = 0; i < initPop; i++) {
-        Peep child;
-        if (config.useCrossover && survivors.size() > 1 && crossoverDist(rng)) {
-            size_t idx1 = parentDist(rng);
-            size_t idx2 = parentDist(rng);
-            int attempts = 0;
-            while (idx2 == idx1 && attempts < 10) {
-                idx2 = parentDist(rng);
-                attempts++;
-            }
-            child = createChild(*survivors[idx1], *survivors[idx2]);
-        } else {
-            size_t idx = parentDist(rng);
-            child = createChild(*survivors[idx]);
-        }
-        
-        nextGen.push_back(child);
-    }
-    
-    // Replace population
-    peeps = std::move(nextGen);
-    
-    // Respawn food
+  auto survivors = getSurvivors();
+
+  float rate = 0.0f;
+  if (!peeps.empty()) {
     if (config.hungerEnabled) {
-        spawnFood();
+      int alive = 0;
+      for (auto &p : peeps)
+        if (p.alive)
+          alive++;
+      rate = (float)alive / (float)peeps.size();
+    } else {
+      rate = (float)survivors.size() / (float)peeps.size();
     }
-    
-    // Advance generation
-    currentGeneration++;
-    generationTimer = 0.0f;
-    selectedPeep = -1;
-    
-    updateStats();
+  }
+
+  float avgHunger = 0.0f;
+  for (auto *s : survivors)
+    avgHunger += s->hunger;
+  if (!survivors.empty())
+    avgHunger /= (float)survivors.size();
+
+  stats.record(rate, (int)survivors.size(), avgHunger);
+
+  if (survivors.empty()) {
+    initialize();
+    return;
+  }
+
+  std::vector<Peep> nextGen;
+  int target = config.getInitialPopulation();
+  nextGen.reserve(target);
+
+  std::uniform_int_distribution<int> parentDist(0, (int)survivors.size() - 1);
+  std::bernoulli_distribution crossDist(config.crossoverRate);
+
+  for (int i = 0; i < target; i++) {
+    bool useTwoParents =
+        config.useCrossover && survivors.size() > 1 && crossDist(rng);
+
+    if (useTwoParents) {
+      int idx1 = parentDist(rng);
+      int idx2 = parentDist(rng);
+      for (int a = 0; a < 10 && idx2 == idx1; a++) {
+        idx2 = parentDist(rng);
+      }
+      nextGen.push_back(createChild(*survivors[idx1], *survivors[idx2]));
+    } else {
+      nextGen.push_back(createChild(*survivors[parentDist(rng)]));
+    }
+  }
+
+  peeps = std::move(nextGen);
+
+  if (config.hungerEnabled) {
+    spawnFood();
+  }
+
+  currentGeneration++;
+  generationTimer = 0.0f;
+  selectedPeep = -1;
+  updateStats();
 }
 
-std::vector<Peep*> Simulation::getSurvivors() {
-    std::vector<Peep*> survivors;
-    
-    // First, check if survival zones are enabled and we have zones
-    bool useSurvivalZones = config.survivalZoneEnabled && !survivalZones.empty();
-    
-    for (Peep& p : peeps) {
-        if (!p.alive) continue;
-        
-        bool survives = true;
-        
-        // If survival zones are enabled, peep must be inside a zone
-        if (useSurvivalZones) {
-            survives = isInSurvivalZone(p.position);
-        }
-        // If using preset survival modes (no drawn zones but mode enabled)
-        else if (config.survivalZoneEnabled) {
-            float half = config.worldSize / 2.0f;
-            float quarter = config.worldSize / 4.0f;
-            int mode = static_cast<int>(config.survivalMode);
-            
-            switch (mode) {
-                case 0: survives = p.position.x >= half; break;
-                case 1: survives = p.position.x < half; break;
-                case 2: survives = p.position.x >= half && p.position.y < half; break;
-                case 3: survives = p.position.x < half && p.position.y < half; break;
-                case 4: survives = p.position.x >= half && p.position.y >= half; break;
-                case 5: survives = p.position.x < half && p.position.y >= half; break;
-                case 6: survives = (p.position.x < quarter && p.position.y < quarter) ||
-                                   (p.position.x >= config.worldSize - quarter && p.position.y < quarter) ||
-                                   (p.position.x < quarter && p.position.y >= config.worldSize - quarter) ||
-                                   (p.position.x >= config.worldSize - quarter && p.position.y >= config.worldSize - quarter);
-                        break;
-                default: survives = true; break;
-            }
-        }
-        // Energy mode with no survival zones: survival based on having energy
-        // (already filtered by p.alive which requires energy > 0)
-        
-        if (survives) {
-            survivors.push_back(&p);
-        }
+std::vector<Peep *> Simulation::getSurvivors() {
+  std::vector<Peep *> survivors;
+  bool useDrawn = config.survivalZoneEnabled && !survivalZones.empty();
+
+  for (auto &p : peeps) {
+    if (!p.alive)
+      continue;
+
+    bool survives = true;
+
+    if (useDrawn) {
+      survives = inSurvivalZone(p.position);
+    } else if (config.survivalZoneEnabled) {
+      float half = config.worldSize / 2.0f;
+      float quarter = config.worldSize / 4.0f;
+      int mode = config.getSurvivalMode();
+
+      switch (mode) {
+      case 0:
+        survives = (p.position.x >= half);
+        break;
+      case 1:
+        survives = (p.position.x < half);
+        break;
+      case 2:
+        survives = (p.position.x >= half && p.position.y < half);
+        break;
+      case 3:
+        survives = (p.position.x < half && p.position.y < half);
+        break;
+      case 4:
+        survives = (p.position.x >= half && p.position.y >= half);
+        break;
+      case 5:
+        survives = (p.position.x < half && p.position.y >= half);
+        break;
+      case 6:
+        survives = (p.position.x < quarter && p.position.y < quarter) ||
+                   (p.position.x >= config.worldSize - quarter &&
+                    p.position.y < quarter) ||
+                   (p.position.x < quarter &&
+                    p.position.y >= config.worldSize - quarter) ||
+                   (p.position.x >= config.worldSize - quarter &&
+                    p.position.y >= config.worldSize - quarter);
+        break;
+      }
     }
-    
-    return survivors;
+
+    if (survives)
+      survivors.push_back(&p);
+  }
+
+  return survivors;
 }
 
-// ============================================================================
-// BIT-FLIP MUTATION
-// ============================================================================
+Food *Simulation::findNearestFood(sf::Vector2f pos) {
+  Food *nearest = nullptr;
+  float minDistSq = 1e9f;
 
-std::vector<uint32_t> Simulation::mutateGenome(std::vector<uint32_t>& genome) {
-    // Mutation rate is per-gene probability
-    // For each gene, we might flip one or more bits
-    
-    std::bernoulli_distribution shouldMutate(config.mutationRate);
-    std::uniform_int_distribution<int> bitDist(0, 31);
-    
-    // How many bits to flip when mutation occurs (based on mutation strength)
-    // strength 0.1 = usually 1 bit, strength 1.0 = up to 3-4 bits
-    int maxBitFlips = std::max(1, static_cast<int>(config.mutationStrength * 4));
-    std::uniform_int_distribution<int> flipCountDist(1, maxBitFlips);
-    
-    // Track which bits were flipped for each gene
-    std::vector<uint32_t> mutationMask(genome.size(), 0);
-    
-    for (size_t i = 0; i < genome.size(); i++) {
-        if (shouldMutate(rng)) {
-            // Flip random bits
-            int numFlips = flipCountDist(rng);
-            for (int f = 0; f < numFlips; f++) {
-                int bit = bitDist(rng);
-                genome[i] ^= (1u << bit);      // XOR flips the bit
-                mutationMask[i] |= (1u << bit); // Record which bit was flipped
-            }
-        }
+  for (auto &f : foods) {
+    if (f.eaten())
+      continue;
+
+    sf::Vector2f fpos = f.position();
+    float dx = fpos.x - pos.x;
+    float dy = fpos.y - pos.y;
+    float distSq = dx * dx + dy * dy;
+
+    if (distSq < minDistSq) {
+      minDistSq = distSq;
+      nearest = &f;
     }
-    
-    return mutationMask;
+  }
+  return nearest;
 }
 
-std::vector<uint32_t> Simulation::crossoverGenomes(const std::vector<uint32_t>& g1, 
-                                                    const std::vector<uint32_t>& g2) {
-    std::vector<uint32_t> child;
-    size_t size = std::min(g1.size(), g2.size());
-    child.reserve(size);
-    
-    std::bernoulli_distribution coinFlip(0.5);
-    
-    for (size_t i = 0; i < size; i++) {
-        if (coinFlip(rng)) {
-            child.push_back(g1[i]);
-        } else {
-            child.push_back(g2[i]);
-        }
-    }
-    
-    return child;
+float Simulation::distanceToWall(sf::Vector2f pos) {
+  float minD = std::min(
+      {pos.x, pos.y, config.worldSize - pos.x, config.worldSize - pos.y});
+
+  for (auto &obs : obstacles) {
+    sf::Vector2f closest = obs.closestPoint(pos);
+    float dx = closest.x - pos.x;
+    float dy = closest.y - pos.y;
+    float d = std::sqrt(dx * dx + dy * dy);
+    if (d < minD)
+      minD = d;
+  }
+  return minD;
 }
 
-void Simulation::updatePeepColor(Peep& peep) {
-    // Color based on behavioral traits extracted from genome
-    // This makes peeps with similar DNA have similar colors,
-    // and the colors reflect actual behavior tendencies
-    
-    // Behavioral trait accumulators
-    float foodInfluence = 0.0f;    // How much food inputs affect movement
-    float zoneInfluence = 0.0f;    // How much zone inputs affect movement
-    float posInfluence = 0.0f;     // How much position affects movement
-    float randomInfluence = 0.0f;  // How much random/bias affects movement
-    float totalWeight = 0.0f;      // Total absolute weight (activity level)
-    
-    // Analyze each gene to understand behavioral tendencies
-    for (uint32_t encoded : peep.genome) {
-        Gene gene = Gene::decode(encoded);
-        float absWeight = std::abs(gene.weight);
-        
-        // Only count genes that connect to output neurons (actual behavior)
-        // or through hidden neurons (indirect influence)
-        bool affectsOutput = (gene.destType == 1); // Direct to output
-        bool fromInput = (gene.sourceType == 0);   // From input neuron
-        
-        if (fromInput) {
-            int src = gene.sourceIndex;
-            float influence = absWeight;
-            
-            // Categorize by input type
-            if (src == InputNeuron::NearestFoodDX || 
-                src == InputNeuron::NearestFoodDY || 
-                src == InputNeuron::NearestFoodDist ||
-                src == InputNeuron::Hunger) {
-                // Food-related inputs
-                foodInfluence += influence * (affectsOutput ? 2.0f : 1.0f);
-            }
-            else if (src == InputNeuron::ZoneDX || 
-                     src == InputNeuron::ZoneDY || 
-                     src == InputNeuron::ZoneDist ||
-                     src == InputNeuron::InZone ||
-                     src == InputNeuron::TimeRemaining) {
-                // Zone/survival-related inputs
-                zoneInfluence += influence * (affectsOutput ? 2.0f : 1.0f);
-            }
-            else if (src == InputNeuron::PosX || 
-                     src == InputNeuron::PosY ||
-                     src == InputNeuron::NearestWallDist) {
-                // Position/spatial awareness
-                posInfluence += influence * (affectsOutput ? 2.0f : 1.0f);
-            }
-            else if (src == InputNeuron::Random || 
-                     src == InputNeuron::Bias) {
-                // Random/constant behavior
-                randomInfluence += influence * (affectsOutput ? 2.0f : 1.0f);
-            }
-        }
-        
-        totalWeight += absWeight;
-    }
-    
-    // Normalize influences
-    float totalInfluence = foodInfluence + zoneInfluence + posInfluence + randomInfluence;
-    if (totalInfluence < 0.001f) totalInfluence = 1.0f;
-    
-    float foodRatio = foodInfluence / totalInfluence;
-    float zoneRatio = zoneInfluence / totalInfluence;
-    float posRatio = posInfluence / totalInfluence;
-    float randomRatio = randomInfluence / totalInfluence;
-    
-    // Map behavioral profile to color
-    // Hue: Primary behavior type
-    //   Red/Orange (0-60): Food-seeking (survival instinct)
-    //   Yellow/Green (60-150): Zone-seeking (goal-oriented)
-    //   Cyan/Blue (150-240): Position-aware (spatial)
-    //   Purple/Magenta (240-330): Random/exploratory
-    //   Blended based on ratios
-    
-    float hue = 0.0f;
-    hue += foodRatio * 30.0f;      // Orange center
-    hue += zoneRatio * 105.0f;     // Green center  
-    hue += posRatio * 195.0f;      // Cyan center
-    hue += randomRatio * 285.0f;   // Purple center
-    
-    // Add some variation based on specific gene patterns for siblings to differ slightly
-    uint32_t geneHash = 0;
-    for (size_t i = 0; i < peep.genome.size(); i++) {
-        geneHash ^= peep.genome[i] >> 16; // Use weight bits for subtle variation
-    }
-    float hueVariation = static_cast<float>(geneHash % 40) - 20.0f; // +/- 20 degrees
-    hue = std::fmod(hue + hueVariation + 360.0f, 360.0f);
-    
-    // Saturation: How specialized/focused the behavior is
-    // High saturation = one dominant behavior, low = generalist
-    float maxRatio = std::max({foodRatio, zoneRatio, posRatio, randomRatio});
-    float saturation = 0.4f + maxRatio * 0.5f; // 0.4 to 0.9
-    
-    // Lightness: Activity level (total connection strength)
-    // More active networks are brighter
-    float avgWeight = totalWeight / std::max(1.0f, static_cast<float>(peep.genome.size()));
-    float lightness = 0.35f + std::min(avgWeight / 3.0f, 0.35f); // 0.35 to 0.7
-    
-    // HSL to RGB conversion
-    float c = (1.0f - std::abs(2.0f * lightness - 1.0f)) * saturation;
-    float x = c * (1.0f - std::abs(std::fmod(hue / 60.0f, 2.0f) - 1.0f));
-    float m = lightness - c / 2.0f;
-    
-    float r = 0, g = 0, b = 0;
-    if (hue < 60)       { r = c; g = x; }
-    else if (hue < 120) { r = x; g = c; }
-    else if (hue < 180) { g = c; b = x; }
-    else if (hue < 240) { g = x; b = c; }
-    else if (hue < 300) { r = x; b = c; }
-    else                { r = c; b = x; }
-    
-    peep.colorR = static_cast<uint8_t>(std::min(255.0f, (r + m) * 255.0f));
-    peep.colorG = static_cast<uint8_t>(std::min(255.0f, (g + m) * 255.0f));
-    peep.colorB = static_cast<uint8_t>(std::min(255.0f, (b + m) * 255.0f));
+bool Simulation::insideObstacle(sf::Vector2f pos) {
+  for (auto &obs : obstacles) {
+    if (obs.contains(pos))
+      return true;
+  }
+  return false;
 }
 
-// ============================================================================
-// UTILITIES
-// ============================================================================
-
-Food* Simulation::findNearestFood(sf::Vector2f pos) {
-    Food* nearest = nullptr;
-    float minDist = std::numeric_limits<float>::max();
-    
-    for (Food& food : foods) {
-        if (food.eaten) continue;
-        
-        sf::Vector2f toFood = food.position - pos;
-        float dist = toFood.x * toFood.x + toFood.y * toFood.y;
-        
-        if (dist < minDist) {
-            minDist = dist;
-            nearest = &food;
-        }
-    }
-    
-    return nearest;
+bool Simulation::inSurvivalZone(sf::Vector2f pos) {
+  for (auto &z : survivalZones) {
+    if (z.contains(pos))
+      return true;
+  }
+  return false;
 }
 
-float Simulation::distanceToNearestWall(sf::Vector2f pos) {
-    float distToEdge = std::min({
-        pos.x,
-        pos.y,
-        config.worldSize - pos.x,
-        config.worldSize - pos.y
-    });
-    
-    for (const Obstacle& obs : obstacles) {
-        sf::Vector2f closest = obs.closestPoint(pos);
-        sf::Vector2f toObs = closest - pos;
-        float dist = std::sqrt(toObs.x * toObs.x + toObs.y * toObs.y);
-        distToEdge = std::min(distToEdge, dist);
+void Simulation::findNearestZone(sf::Vector2f pos, float &dx, float &dy,
+                                 float &dist, bool &inside) {
+  dx = dy = 0.0f;
+  dist = 1.0f;
+  inside = false;
+
+  if (survivalZones.empty()) {
+    if (!config.survivalZoneEnabled)
+      return;
+
+    float half = config.worldSize / 2.0f;
+    int mode = config.getSurvivalMode();
+
+    sf::Vector2f target;
+    if (mode == 0) {
+      target = {config.worldSize * 0.75f, config.worldSize * 0.5f};
+      inside = (pos.x >= half);
+    } else if (mode == 1) {
+      target = {config.worldSize * 0.25f, config.worldSize * 0.5f};
+      inside = (pos.x < half);
+    } else {
+      target = {config.worldSize * 0.75f, config.worldSize * 0.5f};
+      inside = (pos.x >= half);
     }
-    
-    return distToEdge;
+
+    float ddx = target.x - pos.x;
+    float ddy = target.y - pos.y;
+    float d = std::sqrt(ddx * ddx + ddy * ddy);
+
+    if (d > Constants::EPSILON) {
+      dx = ddx / d;
+      dy = ddy / d;
+    }
+    dist = inside ? 0.0f : std::min(1.0f, d / config.worldSize);
+    return;
+  }
+
+  float minD = 1e9f;
+  sf::Vector2f nearest;
+
+  for (auto &zone : survivalZones) {
+    if (zone.contains(pos)) {
+      inside = true;
+      dist = 0.0f;
+      sf::Vector2f c = zone.center();
+      float ddx = c.x - pos.x;
+      float ddy = c.y - pos.y;
+      float d = std::sqrt(ddx * ddx + ddy * ddy);
+      if (d > Constants::EPSILON) {
+        dx = ddx / d;
+        dy = ddy / d;
+      }
+      return;
+    }
+
+    sf::Vector2f closest = zone.closestPoint(pos);
+    float ddx = closest.x - pos.x;
+    float ddy = closest.y - pos.y;
+    float d = std::sqrt(ddx * ddx + ddy * ddy);
+
+    if (d < minD) {
+      minD = d;
+      nearest = closest;
+    }
+  }
+
+  float ddx = nearest.x - pos.x;
+  float ddy = nearest.y - pos.y;
+  float d = std::sqrt(ddx * ddx + ddy * ddy);
+
+  if (d > Constants::EPSILON) {
+    dx = ddx / d;
+    dy = ddy / d;
+  }
+  dist = std::min(1.0f, minD / config.peepSenseRange);
 }
 
-bool Simulation::isInsideObstacle(sf::Vector2f pos) {
-    for (const Obstacle& obs : obstacles) {
-        if (obs.contains(pos)) {
-            return true;
-        }
+sf::Vector2f Simulation::randomValidPosition() {
+  if (config.spawnZonesEnabled && !spawnZones.empty()) {
+    std::uniform_int_distribution<int> zoneDist(0, (int)spawnZones.size() - 1);
+
+    for (int i = 0; i < Constants::MAX_POSITION_ATTEMPTS; i++) {
+      sf::Vector2f pos = spawnZones[zoneDist(rng)].randomPoint(rng);
+      if (!insideObstacle(pos))
+        return pos;
     }
-    return false;
+    return spawnZones[0].randomPoint(rng);
+  }
+
+  float minX = Constants::WORLD_MARGIN;
+  float maxX = config.worldSize - Constants::WORLD_MARGIN;
+
+  if (config.spawnZonesEnabled && config.spawnOnLeft) {
+    maxX = config.worldSize * 0.2f;
+  }
+
+  std::uniform_real_distribution<float> distX(minX, maxX);
+  std::uniform_real_distribution<float> distY(
+      Constants::WORLD_MARGIN, config.worldSize - Constants::WORLD_MARGIN);
+
+  for (int i = 0; i < Constants::MAX_POSITION_ATTEMPTS; i++) {
+    sf::Vector2f pos(distX(rng), distY(rng));
+    if (!insideObstacle(pos))
+      return pos;
+  }
+  return {distX(rng), distY(rng)};
 }
 
-bool Simulation::isInSurvivalZone(sf::Vector2f pos) {
-    for (const SurvivalZone& zone : survivalZones) {
-        if (zone.contains(pos)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-void Simulation::findNearestSurvivalZone(sf::Vector2f pos, float& dirX, float& dirY, float& dist, bool& inside) {
-    dirX = 0.0f;
-    dirY = 0.0f;
-    dist = 1.0f;  // Max distance (normalized)
-    inside = false;
-    
-    if (survivalZones.empty()) {
-        // No zones defined - use preset mode if enabled
-        if (config.survivalZoneEnabled) {
-            float half = config.worldSize / 2.0f;
-            int mode = static_cast<int>(config.survivalMode);
-            
-            // Default preset: right half of world
-            sf::Vector2f target;
-            switch (mode) {
-                case 0: // Right half
-                    target = sf::Vector2f(config.worldSize * 0.75f, config.worldSize * 0.5f);
-                    inside = pos.x >= half;
-                    break;
-                case 1: // Left half
-                    target = sf::Vector2f(config.worldSize * 0.25f, config.worldSize * 0.5f);
-                    inside = pos.x < half;
-                    break;
-                default:
-                    target = sf::Vector2f(config.worldSize * 0.75f, config.worldSize * 0.5f);
-                    inside = pos.x >= half;
-                    break;
-            }
-            
-            sf::Vector2f toTarget = target - pos;
-            float d = std::sqrt(toTarget.x * toTarget.x + toTarget.y * toTarget.y);
-            if (d > 0.001f) {
-                dirX = toTarget.x / d;
-                dirY = toTarget.y / d;
-            }
-            dist = inside ? 0.0f : std::min(1.0f, d / config.worldSize);
-        }
-        return;
-    }
-    
-    // Find nearest zone
-    float minDist = std::numeric_limits<float>::max();
-    sf::Vector2f nearestPoint;
-    
-    for (const SurvivalZone& zone : survivalZones) {
-        // Check if inside this zone
-        if (zone.contains(pos)) {
-            inside = true;
-            dist = 0.0f;
-            // Direction to center of zone
-            sf::Vector2f center = zone.position + zone.size * 0.5f;
-            sf::Vector2f toCenter = center - pos;
-            float d = std::sqrt(toCenter.x * toCenter.x + toCenter.y * toCenter.y);
-            if (d > 0.001f) {
-                dirX = toCenter.x / d;
-                dirY = toCenter.y / d;
-            }
-            return;
-        }
-        
-        // Find closest point on zone edge
-        float closestX = std::max(zone.position.x, std::min(pos.x, zone.position.x + zone.size.x));
-        float closestY = std::max(zone.position.y, std::min(pos.y, zone.position.y + zone.size.y));
-        
-        sf::Vector2f closest(closestX, closestY);
-        sf::Vector2f toZone = closest - pos;
-        float d = std::sqrt(toZone.x * toZone.x + toZone.y * toZone.y);
-        
-        if (d < minDist) {
-            minDist = d;
-            nearestPoint = closest;
-        }
-    }
-    
-    // Calculate direction to nearest zone
-    sf::Vector2f toNearest = nearestPoint - pos;
-    float d = std::sqrt(toNearest.x * toNearest.x + toNearest.y * toNearest.y);
-    if (d > 0.001f) {
-        dirX = toNearest.x / d;
-        dirY = toNearest.y / d;
-    }
-    dist = std::min(1.0f, minDist / config.peepSenseRange);
-}
-
-sf::Vector2f Simulation::getRandomValidPosition() {
-    std::uniform_real_distribution<float> posDist(10.0f, config.worldSize - 10.0f);
-    
-    sf::Vector2f pos;
-    int attempts = 0;
-    const int maxAttempts = 100;
-    
-    do {
-        pos = sf::Vector2f(posDist(rng), posDist(rng));
-        attempts++;
-    } while (isInsideObstacle(pos) && attempts < maxAttempts);
-    
-    return pos;
+void Simulation::spawnFood() {
+  foods.clear();
+  int count = config.getFoodCount();
+  foods.reserve(count);
+  for (int i = 0; i < count; i++) {
+    sf::Vector2f pos = randomValidPosition();
+    foods.emplace_back(pos.x, pos.y);
+  }
 }
 
 void Simulation::updateStats() {
-    stats.currentGeneration = currentGeneration;
-    stats.populationCount = static_cast<int>(peeps.size());
-    
-    int aliveCount = 0;
-    float totalHunger = 0.0f;
-    
-    for (const Peep& p : peeps) {
-        if (p.alive) {
-            aliveCount++;
-            totalHunger += p.hunger;
-        }
+  stats.currentGeneration = currentGeneration;
+  stats.populationCount = (int)peeps.size();
+
+  int alive = 0;
+  float hunger = 0.0f;
+  for (auto &p : peeps) {
+    if (p.alive) {
+      alive++;
+      hunger += p.hunger;
     }
-    
-    stats.aliveCount = aliveCount;
-    stats.averageHunger = aliveCount > 0 ? totalHunger / static_cast<float>(aliveCount) : 0.0f;
-    stats.survivalRate = peeps.empty() ? 0.0f : static_cast<float>(aliveCount) / static_cast<float>(peeps.size());
+  }
+
+  stats.aliveCount = alive;
+  stats.averageHunger = alive > 0 ? hunger / (float)alive : 0.0f;
+  stats.survivalRate =
+      peeps.empty() ? 0.0f : (float)alive / (float)peeps.size();
 }
 
-void Simulation::reset() {
-    initialize();
+void Simulation::reset() { initialize(); }
+
+void Simulation::applyPreset(int index) {
+  obstacles.clear();
+  survivalZones.clear();
+  spawnZones.clear();
+
+  switch (index) {
+  case 0:
+    config.presetMigration();
+    break;
+  case 1:
+    config.presetForaging();
+    break;
+  case 2:
+    config.presetMazeRunner();
+    generateMazeObstacles();
+    break;
+  case 3:
+    config.presetHungerGames();
+    generateMazeObstacles();
+    break;
+  case 4:
+    config.presetBigBrains();
+    generateMazeObstacles();
+    break;
+  case 5:
+    config.presetSpeedDemons();
+    break;
+  default:
+    config.resetToDefaults();
+    break;
+  }
+
+  if (config.survivalZoneEnabled) {
+    generatePresetZone();
+  }
+  if (config.spawnOnLeft) {
+    generatePresetSpawnZone();
+  }
+
+  initialize();
+}
+
+void Simulation::generateMazeObstacles() {
+  obstacles.clear();
+  float ws = config.worldSize;
+  float thick = 30.0f;
+  float gap = 80.0f;
+
+  obstacles.emplace_back(ws * 0.25f - thick / 2, gap, thick, ws - gap);
+  obstacles.emplace_back(ws * 0.5f - thick / 2, 0, thick, ws - gap);
+  obstacles.emplace_back(ws * 0.75f - thick / 2, 0, thick, ws * 0.4f);
+  obstacles.emplace_back(ws * 0.75f - thick / 2, ws * 0.6f, thick, ws * 0.4f);
+}
+
+void Simulation::generatePresetZone() {
+  survivalZones.clear();
+  float ws = config.worldSize;
+  int mode = config.getSurvivalMode();
+
+  switch (mode) {
+  case 0:
+    survivalZones.emplace_back(ws * 0.8f, 0, ws * 0.2f, ws);
+    break;
+  case 1:
+    survivalZones.emplace_back(0, 0, ws * 0.2f, ws);
+    break;
+  case 2:
+    survivalZones.emplace_back(ws * 0.3f, ws * 0.3f, ws * 0.4f, ws * 0.4f);
+    break;
+  case 3:
+    survivalZones.emplace_back(0, 0, ws * 0.15f, ws * 0.15f);
+    survivalZones.emplace_back(ws * 0.85f, 0, ws * 0.15f, ws * 0.15f);
+    survivalZones.emplace_back(0, ws * 0.85f, ws * 0.15f, ws * 0.15f);
+    survivalZones.emplace_back(ws * 0.85f, ws * 0.85f, ws * 0.15f, ws * 0.15f);
+    break;
+  default:
+    survivalZones.emplace_back(ws * 0.8f, 0, ws * 0.2f, ws);
+    break;
+  }
+}
+
+void Simulation::generatePresetSpawnZone() {
+  spawnZones.clear();
+  if (config.spawnOnLeft) {
+    float ws = config.worldSize;
+    float margin = Constants::WORLD_MARGIN;
+    spawnZones.emplace_back(margin, margin, ws * 0.2f - margin,
+                            ws - margin * 2);
+  }
 }

@@ -10,9 +10,35 @@ find_package(SFML 3 COMPONENTS Graphics REQUIRED)
 # Create executable with all source files
 add_executable(evosim
     src/main.cpp
-    src/simulation.cpp
-    src/render.cpp
-    src/types.cpp
+    
+    # Simulation (split into 4 files)
+    src/simulation/simulation.cpp
+    src/simulation/peep_logic.cpp
+    src/simulation/generation.cpp
+    src/simulation/world.cpp
+    
+    # Renderer (split into 4 files)
+    src/render/renderer.cpp
+    src/render/draw_world.cpp
+    src/render/draw_ui.cpp
+    src/render/input.cpp
+    
+    # Core
+    src/core/config.cpp
+    src/core/stats.cpp
+    
+    # Entities
+    src/entities/rect.cpp
+    src/entities/spawn_zone.cpp
+    src/entities/food.cpp
+    src/entities/peep.cpp
+    
+    # Neural
+    src/neural/gene.cpp
+    src/neural/brain.cpp
+    
+    # UI
+    src/ui/widgets.cpp
 )
 
 # Set C++17 standard
